@@ -177,12 +177,12 @@ pub type ConfigResult<T> = std::result::Result<T, Error>;
 /// 脱敏连接串：仅保留 scheme 与 `@` 之后的部分，隐藏用户与密码。
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "redis"))]
 pub(crate) fn mask_url(url: &str) -> String {
-    if let Some(at_pos) = url.find('@') {
-        if let Some(scheme_end) = url.find("://") {
-            let scheme = &url[..scheme_end + 3];
-            let rest = &url[at_pos..];
-            return format!("{scheme}****{rest}");
-        }
+    if let Some(at_pos) = url.find('@')
+        && let Some(scheme_end) = url.find("://")
+    {
+        let scheme = &url[..scheme_end + 3];
+        let rest = &url[at_pos..];
+        return format!("{scheme}****{rest}");
     }
     url.to_string()
 }

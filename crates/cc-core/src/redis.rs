@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use ::redis::aio::ConnectionManager;
 use ::redis::AsyncTypedCommands;
 use ::redis::Client;
+use ::redis::aio::ConnectionManager;
 
 use crate::config::{Config, IntoConnectionName, RedisConfig};
 use crate::error::mask_url;

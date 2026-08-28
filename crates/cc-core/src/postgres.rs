@@ -5,7 +5,7 @@ use std::time::Duration;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
 
 use crate::config::PostgresConfig;
-use crate::error::{mask_url, ConfigResult, Error};
+use crate::error::{ConfigResult, Error, mask_url};
 
 /// 把配置里的字符串 ssl_mode 映射到 sqlx 的枚举（无法识别时回退 Prefer）。
 pub fn ssl_mode_from_str(s: &str) -> PgSslMode {

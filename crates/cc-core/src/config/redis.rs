@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use super::split_env_field;
 use super::Validate;
+use super::split_env_field;
 use crate::error::{ConfigResult, Error};
 
 // ──────────────────────────────────────────────

@@ -1,0 +1,5 @@
+# 配置示例：仅保留 PostgreSQL 引导连接，其余配置（redis/mysql/tracing/mode 等）从 app_config 表读取。
+# 复制本文件为 config/config.dev.toml 后按需修改。
+
+[postgres.default]
+url = "postgres://postgres:your_password@127.0.0.1:5432/your_db"

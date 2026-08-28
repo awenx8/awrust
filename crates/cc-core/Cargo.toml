@@ -1,10 +1,10 @@
 [package]
 name = "cc-core"
 version = "0.5.0"
-edition = "2021"
+edition = "2024"
 description = "A core library for configuration, PostgreSQL/MySQL and Redis connection management"
 license = "MIT"
-repository = "https://github.com/gitcn99/awrust"
+repository = "https://github.com/awenx8/awrust"
 readme = "../../README.md"
 keywords = ["config", "postgres", "mysql", "redis", "database"]
 categories = ["database", "config"]

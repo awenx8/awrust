@@ -76,10 +76,10 @@ pub(crate) fn split_env_field<'a>(
 ) -> Option<(String, &'a str)> {
     for &field in known_fields {
         let suffix = format!("_{field}");
-        if let Some(name) = rest.strip_suffix(&suffix) {
-            if !name.is_empty() {
-                return Some((name.to_lowercase(), field));
-            }
+        if let Some(name) = rest.strip_suffix(&suffix)
+            && !name.is_empty()
+        {
+            return Some((name.to_lowercase(), field));
         }
     }
     None
@@ -414,10 +414,10 @@ fn apply_env_overrides(cfg: &mut Config, prefix: &str) -> ConfigResult<()> {
     cfg.mysql = mysql::collect_env_mysql(prefix, &cfg.mysql)?;
     cfg.redis = redis::collect_env_redis(prefix, &cfg.redis)?;
     cfg.tracing = tracing::collect_env_tracing(prefix, &cfg.tracing)?;
-    if let Ok(m) = std::env::var(format!("{}_MODE", prefix)) {
-        if !m.is_empty() {
-            cfg.mode = Some(m);
-        }
+    if let Ok(m) = std::env::var(format!("{}_MODE", prefix))
+        && !m.is_empty()
+    {
+        cfg.mode = Some(m);
     }
     cfg.validate()?;
     Ok(())
@@ -433,7 +433,9 @@ mod tests {
 
     #[test]
     fn from_env_works() -> ConfigResult<()> {
-        std::env::set_var("ENV_WORKS_CC_MYSQL_DEFAULT_HOST", "env-host");
+        unsafe {
+            std::env::set_var("ENV_WORKS_CC_MYSQL_DEFAULT_HOST", "env-host");
+        }
 
         let cfg = ConfigBuilder::empty()
             .env_prefix("ENV_WORKS_CC")
@@ -443,14 +445,18 @@ mod tests {
 
         assert_eq!(cfg.mysql("default").unwrap().host, "env-host");
 
-        std::env::remove_var("ENV_WORKS_CC_MYSQL_DEFAULT_HOST");
+        unsafe {
+            std::env::remove_var("ENV_WORKS_CC_MYSQL_DEFAULT_HOST");
+        }
         Ok(())
     }
 
     #[test]
     fn env_prefix_override() -> ConfigResult<()> {
-        std::env::set_var("TEST_CC_MYSQL_DEFAULT_HOST", "env-host");
-        std::env::set_var("TEST_CC_REDIS_DEFAULT_URL", "redis://env:6379");
+        unsafe {
+            std::env::set_var("TEST_CC_MYSQL_DEFAULT_HOST", "env-host");
+            std::env::set_var("TEST_CC_REDIS_DEFAULT_URL", "redis://env:6379");
+        }
 
         let cfg = ConfigBuilder::empty()
             .env_prefix("TEST_CC")
@@ -461,8 +467,10 @@ mod tests {
         assert_eq!(cfg.mysql("default").unwrap().host, "env-host");
         assert_eq!(cfg.redis("default").unwrap().url, "redis://env:6379");
 
-        std::env::remove_var("TEST_CC_MYSQL_DEFAULT_HOST");
-        std::env::remove_var("TEST_CC_REDIS_DEFAULT_URL");
+        unsafe {
+            std::env::remove_var("TEST_CC_MYSQL_DEFAULT_HOST");
+            std::env::remove_var("TEST_CC_REDIS_DEFAULT_URL");
+        }
         Ok(())
     }
 
@@ -502,12 +510,16 @@ mod tests {
 
     #[test]
     fn env_mode_sets_mode() {
-        std::env::set_var("MODE_CC_MODE", "staging");
+        unsafe {
+            std::env::set_var("MODE_CC_MODE", "staging");
+        }
         let cfg = ConfigBuilder::empty()
             .env_prefix("MODE_CC")
             .build()
             .unwrap();
         assert_eq!(cfg.mode(), Some("staging"));
-        std::env::remove_var("MODE_CC_MODE");
+        unsafe {
+            std::env::remove_var("MODE_CC_MODE");
+        }
     }
 }

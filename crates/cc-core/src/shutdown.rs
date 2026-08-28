@@ -91,7 +91,7 @@ impl GracefulShutdown {
 
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal as unix_signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal as unix_signal};
             let mut sigterm =
                 unix_signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
 

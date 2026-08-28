@@ -9,7 +9,7 @@ use cc_core::{ConfigBuilder, GracefulShutdown};
 
 #[tokio::main]
 async fn main() -> cc_core::ConfigResult<()> {
-    // 1. 加载配置：配置文件提供 PostgreSQL 引导连接，其余配置从 app_config 表读取
+    // 1. 加载配置：从环境变量读取引导连接串，连接其 app_config 表加载全部配置
     let config = ConfigBuilder::auto().await?;
 
     // 初始化 tracing 日志

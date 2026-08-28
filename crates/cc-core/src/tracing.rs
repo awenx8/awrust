@@ -1,9 +1,9 @@
 //! Tracing 日志初始化，根据配置设置全局 subscriber。
 
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 use crate::config::TracingConfig;
 use crate::error::{ConfigResult, Error};

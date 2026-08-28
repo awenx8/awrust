@@ -2,7 +2,7 @@ help:
     @echo ""
 
 env:
-    pnpm add -DE @biomejs/biome rumdl
+    bun install -g @biomejs/biome rumdl
 
 fmt:
     biome format --write .
@@ -20,14 +20,14 @@ test:
 
 examples:
     @for d in crates/*/examples/*.rs; do \
-        name=$$$$(basename $$$$d .rs); \
-        crate=$$$$(basename $$$$(dirname $$$$(dirname $$$$d))); \
-        echo "\n▶ Running $$$$crate::$$$$name ..."; \
-        if [ "$$$$name" = "hot_reload" ]; then \
-            timeout 5 cargo run -p $$$$crate --example $$$$name --all-features || true; \
-        else \
-            cargo run -p $$$$crate --example $$$$name --all-features; \
-        fi; \
+        name=$(basename $d .rs); \
+        crate=$(basename $(dirname $(dirname $d))); \
+        echo "\n▶ Running $crate::$name ..."; \
+        case "$name" in \
+            hot_reload) timeout 5 cargo run -p $crate --example $name --all-features || true ;; \
+            mysql_connect|postgres_connect|redis_connect) echo "⏭ Skipping $crate::$name (requires a live database)" ;; \
+            *) cargo run -p $crate --example $name --all-features ;; \
+        esac; \
     done
 
 verify: fmt lint test examples
