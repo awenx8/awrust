@@ -7,21 +7,21 @@ use super::Validate;
 use crate::error::{ConfigResult, Error};
 
 // ──────────────────────────────────────────────
-// MySQL 配置
+// PostgreSQL 配置
 // ──────────────────────────────────────────────
 
-/// 单个 MySQL 连接的配置。
+/// 单个 PostgreSQL 连接的配置。
 ///
-/// 配置以连接串（`url`）为主，如 `mysql://user:pass@127.0.0.1:3306/db`；
+/// 配置以连接串（`url`）为主，如 `postgres://user:pass@127.0.0.1:5432/db`；
 /// `url` 为空时回退到逐字段配置（host/port/user/password/database）。
 #[derive(Debug, Clone, Deserialize)]
-pub struct MysqlConfig {
-    /// 主连接串，如 `mysql://user:pass@host:3306/db`（url 模式）。
+pub struct PostgresConfig {
+    /// 主连接串，如 `postgres://user:pass@host:5432/db`（url 模式）。
     #[serde(default)]
     pub url: String,
     #[serde(default)]
     pub host: String,
-    #[serde(default = "default_mysql_port")]
+    #[serde(default = "default_postgres_port")]
     pub port: u16,
     #[serde(default, alias = "username")]
     pub user: String,
@@ -33,41 +33,38 @@ pub struct MysqlConfig {
     pub max_connections: u32,
     #[serde(default = "default_ssl_mode")]
     pub ssl_mode: String,
-    #[serde(default)]
-    pub disable_sql_mode: bool,
     #[serde(default = "default_acquire_timeout")]
     pub acquire_timeout: u32,
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout: u32,
 }
 
-impl Default for MysqlConfig {
+impl Default for PostgresConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
             host: String::new(),
-            port: default_mysql_port(),
+            port: default_postgres_port(),
             user: String::new(),
             password: String::new(),
             database: String::new(),
             max_connections: default_max_connections(),
             ssl_mode: default_ssl_mode(),
-            disable_sql_mode: false,
             acquire_timeout: default_acquire_timeout(),
             idle_timeout: default_idle_timeout(),
         }
     }
 }
 
-impl MysqlConfig {
+impl PostgresConfig {
     /// 返回主连接串；未设置（字段模式）时返回 `None`。
     pub fn url(&self) -> Option<&str> {
         (!self.url.is_empty()).then_some(self.url.as_str())
     }
 }
 
-fn default_mysql_port() -> u16 {
-    3306
+fn default_postgres_port() -> u16 {
+    5432
 }
 fn default_max_connections() -> u32 {
     10
@@ -79,65 +76,71 @@ fn default_idle_timeout() -> u32 {
     60
 }
 fn default_ssl_mode() -> String {
-    "preferred".to_string()
+    "prefer".to_string()
 }
 
-impl Validate for MysqlConfig {
+impl Validate for PostgresConfig {
     fn validate(&self) -> ConfigResult<()> {
         if !self.url.is_empty() {
-            // url 模式：连接串以 mysql:// 或 mariadb:// 开头即可。
-            if !self.url.starts_with("mysql://") && !self.url.starts_with("mariadb://") {
+            // url 模式：连接串以 postgres:// 或 postgresql:// 开头即可。
+            if !self.url.starts_with("postgres://") && !self.url.starts_with("postgresql://") {
                 return Err(Error::ConfigValidation(format!(
-                    "MySQL url 格式无效: `{}`，需以 `mysql://` 或 `mariadb://` 开头",
+                    "PostgreSQL url 格式无效: `{}`，需以 `postgres://` 或 `postgresql://` 开头",
                     self.url
                 )));
             }
         } else {
             // 字段模式：host / database / user 必填。
             if self.host.is_empty() {
-                return Err(Error::ConfigValidation("MySQL host 不能为空".into()));
+                return Err(Error::ConfigValidation("PostgreSQL host 不能为空".into()));
             }
             if self.database.is_empty() {
-                return Err(Error::ConfigValidation("MySQL database 不能为空".into()));
+                return Err(Error::ConfigValidation(
+                    "PostgreSQL database 不能为空".into(),
+                ));
             }
             if self.user.is_empty() {
-                return Err(Error::ConfigValidation("MySQL user 不能为空".into()));
+                return Err(Error::ConfigValidation("PostgreSQL user 不能为空".into()));
             }
             let valid_modes = [
-                "disabled",
                 "disable",
+                "disabled",
                 "off",
+                "allow",
+                "prefer",
                 "preferred",
-                "required",
                 "require",
+                "required",
                 "verify-ca",
                 "verify_ca",
+                "verify-full",
+                "verify_full",
                 "verify-identity",
                 "verify_identity",
             ];
             if !valid_modes.contains(&self.ssl_mode.as_str()) {
                 return Err(Error::ConfigValidation(format!(
-                    "MySQL ssl_mode 无效: `{}`，可选: disabled, disable, off, preferred, required, require, verify-ca, verify-identity",
+                    "PostgreSQL ssl_mode 无效: `{}`，可选: disable, allow, prefer, require, verify-ca, verify-full",
                     self.ssl_mode
                 )));
             }
         }
         if self.port == 0 {
-            return Err(Error::ConfigValidation("MySQL port 不能为 0".into()));
+            return Err(Error::ConfigValidation("PostgreSQL port 不能为 0".into()));
         }
         if self.max_connections == 0 {
             return Err(Error::ConfigValidation(
-                "MySQL max_connections 不能为 0".into(),
+                "PostgreSQL max_connections 不能为 0".into(),
             ));
         }
         if self.acquire_timeout == 0 {
             return Err(Error::ConfigValidation(
-                "MySQL acquire_timeout 不能为 0".into(),
+                "PostgreSQL acquire_timeout 不能为 0".into(),
             ));
         }
         if self.idle_timeout == 0 {
             return Err(Error::ConfigValidation(
-                "MySQL idle_timeout 不能为 0".into(),
+                "PostgreSQL idle_timeout 不能为 0".into(),
             ));
         }
         Ok(())
@@ -145,14 +148,14 @@ impl Validate for MysqlConfig {
 }
 
 // ──────────────────────────────────────────────
-// MySQL 子构建器
+// PostgreSQL 子构建器
 // ──────────────────────────────────────────────
 
-/// MySQL 单连接构建器，提供链式 API。
-pub struct MysqlConfigBuilder(pub(crate) MysqlConfig);
+/// PostgreSQL 单连接构建器，提供链式 API。
+pub struct PostgresConfigBuilder(pub(crate) PostgresConfig);
 
-impl MysqlConfigBuilder {
-    /// 设置主连接串，如 `mysql://user:pass@host:3306/db`。
+impl PostgresConfigBuilder {
+    /// 设置主连接串，如 `postgres://user:pass@host:5432/db`。
     pub fn url(mut self, v: impl Into<String>) -> Self {
         self.0.url = v.into();
         self
@@ -185,10 +188,6 @@ impl MysqlConfigBuilder {
         self.0.ssl_mode = v.into();
         self
     }
-    pub fn disable_sql_mode(mut self, v: bool) -> Self {
-        self.0.disable_sql_mode = v;
-        self
-    }
     /// 设置连接超时时间（秒）
     pub fn acquire_timeout(mut self, v: u32) -> Self {
         self.0.acquire_timeout = v;
@@ -205,7 +204,7 @@ impl MysqlConfigBuilder {
 // 环境变量解析
 // ──────────────────────────────────────────────
 
-const MYSQL_ENV_FIELDS: &[&str] = &[
+const POSTGRES_ENV_FIELDS: &[&str] = &[
     "URL",
     "HOST",
     "PORT",
@@ -214,32 +213,31 @@ const MYSQL_ENV_FIELDS: &[&str] = &[
     "DATABASE",
     "MAX_CONNECTIONS",
     "SSL_MODE",
-    "DISABLE_SQL_MODE",
     "ACQUIRE_TIMEOUT",
     "IDLE_TIMEOUT",
 ];
 
-pub(crate) fn collect_env_mysql(
+pub(crate) fn collect_env_postgres(
     prefix: &str,
-    existing: &HashMap<String, MysqlConfig>,
-) -> ConfigResult<HashMap<String, MysqlConfig>> {
+    existing: &HashMap<String, PostgresConfig>,
+) -> ConfigResult<HashMap<String, PostgresConfig>> {
     let mut result = HashMap::new();
     let pfx_upper = prefix.to_uppercase();
-    let prefix_mysql = format!("{pfx_upper}_MYSQL_");
+    let prefix_postgres = format!("{pfx_upper}_POSTGRES_");
 
     for (key, val) in std::env::vars() {
         let upper = key.to_uppercase();
-        let rest = match upper.strip_prefix(&prefix_mysql) {
+        let rest = match upper.strip_prefix(&prefix_postgres) {
             Some(r) => r,
             None => continue,
         };
 
-        let (name, field) = match split_env_field(rest, MYSQL_ENV_FIELDS) {
+        let (name, field) = match split_env_field(rest, POSTGRES_ENV_FIELDS) {
             Some(v) => v,
             None => continue,
         };
 
-        tracing::trace!(key = %key, name = %name, field = %field, "读取 MySQL 环境变量");
+        tracing::trace!(key = %key, name = %name, field = %field, "读取 PostgreSQL 环境变量");
 
         let entry = result
             .entry(name.clone())
@@ -264,9 +262,6 @@ pub(crate) fn collect_env_mysql(
                 })?
             }
             "SSL_MODE" => entry.ssl_mode = val,
-            "DISABLE_SQL_MODE" => {
-                entry.disable_sql_mode = matches!(val.to_lowercase().as_str(), "1" | "true" | "yes")
-            }
             "ACQUIRE_TIMEOUT" => {
                 entry.acquire_timeout = val.parse().map_err(|e| Error::EnvParse {
                     key: key.clone(),
@@ -296,8 +291,8 @@ mod tests {
     #[test]
     fn validation_rejects_empty_host() {
         let result = ConfigBuilder::empty()
-            .with_mysql("default", |m| {
-                m.host("").user("u").password("p").database("db")
+            .with_postgres("default", |p| {
+                p.host("").user("u").password("p").database("db")
             })
             .build();
         assert!(result.is_err());
@@ -310,12 +305,12 @@ mod tests {
     #[test]
     fn url_accepts_valid_and_rejects_bad_scheme() {
         let ok = ConfigBuilder::empty()
-            .with_mysql("default", |m| m.url("mysql://u:p@h:3306/db"))
+            .with_postgres("default", |p| p.url("postgres://u:p@h:5432/db"))
             .build();
         assert!(ok.is_ok());
 
         let bad = ConfigBuilder::empty()
-            .with_mysql("default", |m| m.url("http://u:p@h:3306/db"))
+            .with_postgres("default", |p| p.url("http://u:p@h:5432/db"))
             .build();
         assert!(bad.is_err());
         let err = bad.unwrap_err();

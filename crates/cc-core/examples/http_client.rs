@@ -28,7 +28,8 @@ struct CreateUser {
 
 #[tokio::main]
 async fn main() -> cc_core::ConfigResult<()> {
-    let config = cc_core::ConfigBuilder::new()?.build()?;
+    // 配置仅来自环境变量（或数据库，若启用 config-db）；此处仅读取 tracing 配置。
+    let config = cc_core::ConfigBuilder::from_env()?.build()?;
     cc_core::tracing::init_tracing(&config.tracing)?;
 
     // 1. 创建 HTTP 客户端

@@ -6,23 +6,13 @@ use ::redis::aio::ConnectionManager;
 use ::redis::AsyncTypedCommands;
 use ::redis::Client;
 
-use crate::config::{Config, IntoRedisName, RedisConfig};
+use crate::config::{Config, IntoConnectionName, RedisConfig};
+use crate::error::mask_url;
 use crate::error::{ConfigResult, Error};
 
 /// 对 Redis URL 进行脱敏，隐藏密码部分。
 ///
 /// `redis://:password@host:6379` → `redis://:****@host:6379`
-fn mask_url(url: &str) -> String {
-    if let Some(at_pos) = url.find('@') {
-        if let Some(scheme_end) = url.find("://") {
-            let scheme = &url[..scheme_end + 3];
-            let rest = &url[at_pos..];
-            return format!("{scheme}****{rest}");
-        }
-    }
-    url.to_string()
-}
-
 /// Redis 连接状态信息。
 #[derive(Debug, Clone)]
 pub struct ConnectionStats {
@@ -118,12 +108,12 @@ impl RedisManager {
     }
 
     /// 按名取连接。
-    pub fn get(&self, name: impl IntoRedisName) -> Option<&RedisConnection> {
+    pub fn get(&self, name: impl IntoConnectionName) -> Option<&RedisConnection> {
         self.connections.get(&name.into_name())
     }
 
     /// 按名取连接，不存在时报错。
-    pub fn require(&self, name: impl IntoRedisName) -> ConfigResult<&RedisConnection> {
+    pub fn require(&self, name: impl IntoConnectionName) -> ConfigResult<&RedisConnection> {
         let name = name.into_name();
         self.connections
             .get(&name)
@@ -136,7 +126,7 @@ impl RedisManager {
     }
 
     /// 健康检查：对指定连接执行 `PING`。
-    pub async fn ping(&self, name: impl IntoRedisName) -> ConfigResult<()> {
+    pub async fn ping(&self, name: impl IntoConnectionName) -> ConfigResult<()> {
         let name_str = name.into_name();
         let conn = self.require(&name_str)?;
         let mut cm = conn.get_connection();
@@ -157,7 +147,7 @@ impl RedisManager {
     }
 
     /// 获取指定连接的状态信息。
-    pub async fn stats(&self, name: impl IntoRedisName) -> Option<ConnectionStats> {
+    pub async fn stats(&self, name: impl IntoConnectionName) -> Option<ConnectionStats> {
         let conn = self.connections.get(&name.into_name())?;
         let is_alive = conn.is_alive().await;
         Some(ConnectionStats { is_alive })

@@ -4,47 +4,51 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     // ── 配置相关 ──
-    /// 配置文件读取失败。
-    #[error("读取配置文件 {path} 失败: {source}")]
-    ConfigFileRead {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// 配置解析失败（TOML / YAML / JSON）。
-    #[error("解析 {format} 配置失败: {message}")]
-    ConfigParse { format: String, message: String },
-
     /// 配置验证失败。
     #[error("配置验证失败: {0}")]
     ConfigValidation(String),
 
-    /// 命名模式配置文件未找到。
-    #[error(
-        "模式配置文件不存在: {path}（当前模式 `{mode}`，请创建该文件或通过 {prefix}_MODE 环境变量切换模式）"
-    )]
-    ModeConfigNotFound {
-        path: String,
-        mode: String,
-        prefix: String,
+    /// 未配置数据库配置源的环境变量（`APP_CONFIG_DATABASE_URL` / `CC_CONFIG_DB_URL`）。
+    #[error("未配置数据库配置连接串：请设置环境变量 APP_CONFIG_DATABASE_URL 或 CC_CONFIG_DB_URL")]
+    ConfigDbUrlMissing,
+
+    /// 从数据库加载配置失败。
+    #[cfg(feature = "config-db")]
+    #[error("从数据库加载配置失败（{url}）: {source}")]
+    ConfigDatabase {
+        url: String,
+        #[source]
+        source: sqlx::Error,
+    },
+
+    /// 配置值解析失败（如数值字段填了非数字）。
+    #[cfg(feature = "config-db")]
+    #[error("配置值解析失败: group=`{group}`, key=`{key}`, 期望 {expected}, 实际 `{value}`")]
+    ConfigValueInvalid {
+        group: String,
+        key: String,
+        expected: String,
+        value: String,
     },
 
     // ── MySQL 相关 ──
     /// MySQL 连接建立失败。
     #[cfg(feature = "mysql")]
-    #[error("连接 MySQL({host}:{port}) 失败: {source}")]
+    #[error("连接 MySQL {target} 失败: {source}")]
     MysqlConnect {
-        host: String,
-        port: u16,
+        /// 连接目标：url 模式为脱敏后的连接串，字段模式为 `host:port`。
+        target: String,
         #[source]
         source: sqlx::Error,
     },
 
     /// MySQL 连接池操作失败。
     #[cfg(feature = "mysql")]
-    #[error("MySQL 连接池操作失败: {0}")]
-    MysqlPool(#[from] sqlx::Error),
+    #[error("MySQL 连接池操作失败: {source}")]
+    MysqlPool {
+        #[source]
+        source: sqlx::Error,
+    },
 
     /// MySQL 连接名未找到。
     #[cfg(feature = "mysql")]
@@ -55,6 +59,40 @@ pub enum Error {
     #[cfg(feature = "mysql")]
     #[error("MySQL({name}) 健康检查失败: {message}")]
     MysqlHealthCheck {
+        name: String,
+        message: String,
+        #[source]
+        source: sqlx::Error,
+    },
+
+    // ── PostgreSQL 相关 ──
+    /// PostgreSQL 连接建立失败。
+    #[cfg(feature = "postgres")]
+    #[error("连接 PostgreSQL {target} 失败: {source}")]
+    PostgresConnect {
+        /// 连接目标：url 模式为脱敏后的连接串，字段模式为 `host:port`。
+        target: String,
+        #[source]
+        source: sqlx::Error,
+    },
+
+    /// PostgreSQL 连接池操作失败。
+    #[cfg(feature = "postgres")]
+    #[error("PostgreSQL 连接池操作失败: {source}")]
+    PostgresPool {
+        #[source]
+        source: sqlx::Error,
+    },
+
+    /// PostgreSQL 连接名未找到。
+    #[cfg(feature = "postgres")]
+    #[error("未找到名为 `{name}` 的 PostgreSQL 连接")]
+    PostgresNotFound { name: String },
+
+    /// PostgreSQL 连接健康检查失败。
+    #[cfg(feature = "postgres")]
+    #[error("PostgreSQL({name}) 健康检查失败: {message}")]
+    PostgresHealthCheck {
         name: String,
         message: String,
         #[source]
@@ -102,11 +140,6 @@ pub enum Error {
         source: redis::RedisError,
     },
 
-    /// Redis 连接创建失败。
-    #[cfg(feature = "redis")]
-    #[error("创建 Redis 连接失败: {message}")]
-    RedisConnectCreate { message: String },
-
     // ── 环境变量相关 ──
     /// 环境变量解析失败。
     #[error("环境变量 {key} 解析失败: {message}")]
@@ -141,34 +174,17 @@ pub enum Error {
 /// 用于 Config::build() 的 Result 类型别名。
 pub type ConfigResult<T> = std::result::Result<T, Error>;
 
-#[cfg(feature = "config-toml")]
-impl From<toml::de::Error> for Error {
-    fn from(e: toml::de::Error) -> Self {
-        Error::ConfigParse {
-            format: "TOML".into(),
-            message: e.to_string(),
+/// 脱敏连接串：仅保留 scheme 与 `@` 之后的部分，隐藏用户与密码。
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "redis"))]
+pub(crate) fn mask_url(url: &str) -> String {
+    if let Some(at_pos) = url.find('@') {
+        if let Some(scheme_end) = url.find("://") {
+            let scheme = &url[..scheme_end + 3];
+            let rest = &url[at_pos..];
+            return format!("{scheme}****{rest}");
         }
     }
-}
-
-#[cfg(feature = "config-yaml")]
-impl From<yaml_serde::Error> for Error {
-    fn from(e: yaml_serde::Error) -> Self {
-        Error::ConfigParse {
-            format: "YAML".into(),
-            message: e.to_string(),
-        }
-    }
-}
-
-#[cfg(feature = "config-json")]
-impl From<serde_json::Error> for Error {
-    fn from(e: serde_json::Error) -> Self {
-        Error::ConfigParse {
-            format: "JSON".into(),
-            message: e.to_string(),
-        }
-    }
+    url.to_string()
 }
 
 #[cfg(feature = "http")]

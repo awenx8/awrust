@@ -1,0 +1,4 @@
+# rumdl 配置（Rust Markdown Linter）
+# 项目 README 以中文为主，放宽行长限制。
+[MD013]
+line-length = 120

@@ -1,21 +1,21 @@
 [package]
 name = "cc-core"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
-description = "A core library for configuration, MySQL and Redis connection management"
+description = "A core library for configuration, PostgreSQL/MySQL and Redis connection management"
 license = "MIT"
 repository = "https://github.com/gitcn99/awrust"
 readme = "../../README.md"
-keywords = ["config", "mysql", "redis", "database"]
+keywords = ["config", "postgres", "mysql", "redis", "database"]
 categories = ["database", "config"]
 
 [features]
-default = ["mysql", "redis", "config-toml", "tracing-init", "http"]
+default = ["postgres", "redis", "tracing-init", "http", "config-db"]
+postgres = ["dep:sqlx", "sqlx/postgres"]
 mysql = ["dep:sqlx", "sqlx/mysql"]
 redis = ["dep:redis"]
-config-toml = ["dep:toml"]
-config-yaml = ["dep:yaml_serde"]
-config-json = ["dep:serde_json"]
+# 从 PostgreSQL 的 app_config 统一配置表读取全部配置
+config-db = ["dep:sqlx", "sqlx/postgres"]
 tracing-init = ["dep:tracing-subscriber"]
 http = ["dep:reqwest"]
 
@@ -23,35 +23,37 @@ http = ["dep:reqwest"]
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-toml = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
-yaml_serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"] }
 tracing-subscriber = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 
 
 [[example]]
-name = "basic_config"
-path = "examples/basic_config.rs"
-required-features = ["tracing-init"]
+name = "config_from_db"
+path = "examples/config_from_db.rs"
+required-features = ["config-db", "tracing-init"]
+
+[[example]]
+name = "postgres_connect"
+path = "examples/postgres_connect.rs"
+required-features = ["postgres", "config-db", "tracing-init"]
 
 [[example]]
 name = "mysql_connect"
 path = "examples/mysql_connect.rs"
-required-features = ["mysql", "tracing-init"]
+required-features = ["mysql", "config-db", "tracing-init"]
 
 [[example]]
 name = "redis_connect"
 path = "examples/redis_connect.rs"
-required-features = ["redis", "tracing-init"]
+required-features = ["redis", "config-db", "tracing-init"]
 
 [[example]]
 name = "graceful_shutdown"
 path = "examples/graceful_shutdown.rs"
-required-features = ["mysql", "redis", "tracing-init"]
+required-features = ["postgres", "redis", "config-db", "tracing-init"]
 
 [[example]]
 name = "http_client"

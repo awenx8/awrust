@@ -61,6 +61,16 @@ impl GracefulShutdown {
         });
     }
 
+    /// 注册 PostgreSQL 连接池的优雅关闭。
+    ///
+    /// 将 `PostgresPools::shutdown()` 纳入关闭流程。
+    #[cfg(feature = "postgres")]
+    pub fn register_postgres_pools(&mut self, pools: crate::postgres::PostgresPools) {
+        self.register("postgres-pools", async move {
+            pools.shutdown().await;
+        });
+    }
+
     /// 注册 Redis 连接管理器的优雅关闭。
     ///
     /// 将 `RedisManager::shutdown()` 纳入关闭流程。

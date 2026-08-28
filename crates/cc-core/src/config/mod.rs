@@ -1,48 +1,48 @@
-//! 命名模式配置系统：每个环境一个独立配置文件 → 环境变量 → 程序化覆盖。
+//! 配置系统：配置来源仅保留 **数据库** 与 **环境变量** 两种。
 //!
-//! # 配置来源优先级（从低到高）
+//! - **数据库（默认，`config-db` feature）** — 全部配置集中存储在 PostgreSQL 的 `app_config`
+//!   统一配置表，由 `ConfigBuilder::from_database(url)` 或 `ConfigBuilder::auto()` 读取。
+//!   `auto()` 使用 `APP_CONFIG_DATABASE_URL` / `CC_CONFIG_DB_URL` 环境变量定位引导连接，
+//!   连接该库的 `app_config` 表读取其余全部配置；数据库为**唯一**结构化数据源。
+//! - **环境变量** — 数据库引导连接串、运行模式（`CC_MODE`）与逐连接覆盖（如
+//!   `CC_POSTGRES_<NAME>_URL`）均来自环境变量，并作为最高优先级覆盖数据库中的同名配置。
 //!
-//! 1. **编译模式默认值** — `debug_assertions` 开启时默认 `dev`，关闭时默认 `online`
-//! 2. **命名模式配置文件** — `config/config.dev.toml` / `config/config.online.toml` / `config/config.<任意名>.<ext>`
-//! 3. **环境变量** — `CC_MODE=dev`、`CC_MYSQL_<name>_<field>=value`
-//! 4. **程序化覆盖** — `ConfigBuilder::with_mysql()` / `with_redis()`
-//!
-//! # 配置布局
-//!
-//! 每个环境使用独立的完整配置文件，支持 TOML / YAML / JSON 格式（按 feature 启用）：
+//! # 数据库配置表结构
 //!
 //! ```text
-//! config/config.dev.toml      ← 开发环境（完整独立）
-//! config/config.online.toml   ← 线上环境（完整独立）
-//! config/config.staging.toml  ← 自定义命名（完整独立）
+//! app_config(group_name, key, value, ...)
 //! ```
 //!
-//! `ConfigBuilder::new()` 会自动确定运行模式并加载 `config/config.<mode>.<ext>`（按 feature 尝试 toml/yaml/json）。
+//! 分组到 cc-core 配置的映射约定见 `config-db` feature 下的数据库加载模块文档。
 //!
 //! # 环境变量格式
 //!
 //! ```text
+//! APP_CONFIG_DATABASE_URL=postgres://postgres:secret@127.0.0.1:5432/configdb
+//! CC_CONFIG_DB_URL=postgres://postgres:secret@127.0.0.1:5432/configdb
+//!
 //! CC_MODE=dev
 //!
-//! CC_MYSQL_<NAME>_HOST=127.0.0.1
-//! CC_MYSQL_<NAME>_PORT=3306
-//! CC_MYSQL_<NAME>_USER=root
-//! CC_MYSQL_<NAME>_PASSWORD=secret
-//! CC_MYSQL_<NAME>_DATABASE=mydb
-//!
+//! CC_POSTGRES_<NAME>_URL=postgres://postgres:secret@127.0.0.1:5432/mydb
+//! CC_MYSQL_<NAME>_URL=mysql://root:secret@127.0.0.1:3306/mydb
 //! CC_REDIS_<NAME>_URL=redis://127.0.0.1:6379
+//! CC_TRACING_LEVEL=info
+//! CC_TRACING_FORMAT=json
 //! ```
 
+#[cfg(feature = "config-db")]
+mod db;
 mod mysql;
+mod postgres;
 mod redis;
 mod tracing;
 
 pub use mysql::{MysqlConfig, MysqlConfigBuilder};
+pub use postgres::{PostgresConfig, PostgresConfigBuilder};
 pub use redis::{RedisConfig, RedisConfigBuilder};
 pub use tracing::{TracingConfig, TracingConfigBuilder};
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -50,6 +50,24 @@ use crate::error::{ConfigResult, Error};
 
 /// 默认环境变量前缀。
 pub const DEFAULT_ENV_PREFIX: &str = "CC";
+
+// ──────────────────────────────────────────────
+// 数据库配置值
+// ──────────────────────────────────────────────
+
+/// 全部配置的分组键值存储：`group_name -> (key -> 值)`。
+///
+/// 配置值统一以字符串保存，读取时按需强转（见 `Config::get_int` / `get_bool`）。
+pub type ConfigStore = std::collections::HashMap<String, std::collections::HashMap<String, String>>;
+
+/// 解析字符串为布尔值（true/1/yes/on 与 false/0/no/off）。
+pub(crate) fn parse_bool(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
 
 /// 从 `NAME_FIELD` 格式的字符串中，按已知字段名列表从右匹配，拆分出 (name, field)。
 pub(crate) fn split_env_field<'a>(
@@ -67,88 +85,28 @@ pub(crate) fn split_env_field<'a>(
     None
 }
 
-/// 在配置目录下，按已启用的格式查找 `config.<mode>.<ext>` 文件。
-///
-/// 返回第一个存在的文件路径；若无匹配则返回所有候选路径（用于错误信息）。
-fn find_mode_config(dir: &Path, mode: &str) -> Result<PathBuf, Vec<PathBuf>> {
-    let mut tried = Vec::new();
-    #[cfg(feature = "config-toml")]
-    {
-        let p = dir.join(format!("config.{mode}.toml"));
-        if p.exists() {
-            return Ok(p);
-        }
-        tried.push(p);
-    }
-    #[cfg(feature = "config-yaml")]
-    {
-        let p = dir.join(format!("config.{mode}.yaml"));
-        if p.exists() {
-            return Ok(p);
-        }
-        tried.push(p);
-        let p = dir.join(format!("config.{mode}.yml"));
-        if p.exists() {
-            return Ok(p);
-        }
-        tried.push(p);
-    }
-    #[cfg(feature = "config-json")]
-    {
-        let p = dir.join(format!("config.{mode}.json"));
-        if p.exists() {
-            return Ok(p);
-        }
-        tried.push(p);
-    }
-    Err(tried)
-}
-
 // ──────────────────────────────────────────────
 // 连接名抽象
 // ──────────────────────────────────────────────
 
-/// MySQL 连接名的抽象，用户可为枚举实现此 trait 以获得编译时检查。
-pub trait IntoMysqlName {
+/// 连接名的抽象，用户可为枚举实现此 trait 以获得编译时检查。
+pub trait IntoConnectionName {
     fn into_name(self) -> String;
 }
 
-/// Redis 连接名的抽象，用户可为枚举实现此 trait 以获得编译时检查。
-pub trait IntoRedisName {
-    fn into_name(self) -> String;
-}
-
-impl IntoMysqlName for String {
+impl IntoConnectionName for String {
     fn into_name(self) -> String {
         self
     }
 }
 
-impl IntoMysqlName for &String {
+impl IntoConnectionName for &String {
     fn into_name(self) -> String {
         self.clone()
     }
 }
 
-impl IntoMysqlName for &str {
-    fn into_name(self) -> String {
-        self.to_string()
-    }
-}
-
-impl IntoRedisName for String {
-    fn into_name(self) -> String {
-        self
-    }
-}
-
-impl IntoRedisName for &String {
-    fn into_name(self) -> String {
-        self.clone()
-    }
-}
-
-impl IntoRedisName for &str {
+impl IntoConnectionName for &str {
     fn into_name(self) -> String {
         self.to_string()
     }
@@ -167,24 +125,37 @@ pub trait Validate {
 // Config — 顶层容器
 // ──────────────────────────────────────────────
 
-/// 整个配置：多个命名 MySQL / Redis 连接 + Tracing 日志配置。
+/// 整个配置：多个命名 PostgreSQL / MySQL / Redis 连接 + Tracing 日志配置。
+///
+/// 当从数据库（`config-db` feature）加载时，`store` 同时保留 `app_config`
+/// 表中所有分组的强类型键值，可通过 `get_*()` 方法程序化读取。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
     /// 当前运行模式（如 "dev"、"online"），由 ConfigBuilder 设置，不参与序列化。
     #[serde(skip)]
     pub mode: Option<String>,
     #[serde(default)]
+    pub postgres: HashMap<String, PostgresConfig>,
+    #[serde(default)]
     pub mysql: HashMap<String, MysqlConfig>,
     #[serde(default)]
     pub redis: HashMap<String, RedisConfig>,
     #[serde(default)]
     pub tracing: TracingConfig,
+    /// 来自数据库 `app_config` 表的全部分组键值（仅 `config-db` 加载时填充）。
+    #[serde(skip)]
+    pub store: ConfigStore,
 }
 
 impl Config {
     /// 获取当前运行模式。
     pub fn mode(&self) -> Option<&str> {
         self.mode.as_deref()
+    }
+
+    /// 按名取 PostgreSQL 配置。
+    pub fn postgres(&self, name: &str) -> Option<&PostgresConfig> {
+        self.postgres.get(name)
     }
 
     /// 按名取 MySQL 配置。
@@ -202,6 +173,11 @@ impl Config {
         &self.tracing
     }
 
+    /// 获取所有 PostgreSQL 连接名。
+    pub fn postgres_names(&self) -> impl Iterator<Item = &str> {
+        self.postgres.keys().map(String::as_str)
+    }
+
     /// 获取所有 MySQL 连接名。
     pub fn mysql_names(&self) -> impl Iterator<Item = &str> {
         self.mysql.keys().map(String::as_str)
@@ -211,10 +187,36 @@ impl Config {
     pub fn redis_names(&self) -> impl Iterator<Item = &str> {
         self.redis.keys().map(String::as_str)
     }
+
+    // ── 数据库配置通用访问器（仅 `config-db` 加载时填充 `store`）──
+
+    /// 按分组与键取原始配置值。
+    pub fn get_value(&self, group: &str, key: &str) -> Option<&str> {
+        self.store.get(group)?.get(key).map(String::as_str)
+    }
+
+    /// 按分组与键取整数值（按需解析）。
+    pub fn get_int(&self, group: &str, key: &str) -> Option<i64> {
+        self.get_value(group, key)?.trim().parse().ok()
+    }
+
+    /// 按分组与键取布尔值（按需解析）。
+    pub fn get_bool(&self, group: &str, key: &str) -> Option<bool> {
+        parse_bool(self.get_value(group, key)?)
+    }
+
+    /// 获取某个分组的全部键值（只读视图）。
+    pub fn group(&self, group: &str) -> Option<&HashMap<String, String>> {
+        self.store.get(group)
+    }
 }
 
 impl Validate for Config {
     fn validate(&self) -> ConfigResult<()> {
+        for (name, pc) in &self.postgres {
+            pc.validate()
+                .map_err(|e| Error::ConfigValidation(format!("PostgreSQL[{}]: {}", name, e)))?;
+        }
         for (name, mc) in &self.mysql {
             mc.validate()
                 .map_err(|e| Error::ConfigValidation(format!("MySQL[{}]: {}", name, e)))?;
@@ -234,35 +236,29 @@ impl Validate for Config {
 // ConfigBuilder
 // ──────────────────────────────────────────────
 
-/// 命名模式配置构建器：自动加载 `config/config.<mode>.<ext>` → 环境变量 → 程序化覆盖。
+/// 配置构建器：从数据库（`config-db`）或环境变量加载，环境变量作为最高优先级覆盖。
 ///
-/// 使用自动加载（需存在配置文件）：
+/// 从数据库读取全部配置（推荐入口）：
 /// ```rust,no_run
 /// use cc_core::{ConfigBuilder, ConfigResult};
 ///
-/// fn main() -> ConfigResult<()> {
-///     let cfg = ConfigBuilder::new()?
-///         .with_mysql("default", |m| m.host("127.0.0.1").user("root").password("pw").database("mydb"))
-///         .with_redis("cache", |r| r.url("redis://127.0.0.1:6379"))
-///         .build()?;
-///     Ok(())
-/// }
+/// # async fn run() -> ConfigResult<()> {
+/// let cfg = ConfigBuilder::auto().await?;
+/// # Ok(())
+/// # }
 /// ```
 ///
-/// 仅程序化构建（无需配置文件）：
+/// 仅从环境变量构建（无需数据库）：
 /// ```rust
 /// use cc_core::{ConfigBuilder, ConfigResult};
 ///
 /// fn main() -> ConfigResult<()> {
-///     let cfg = ConfigBuilder::empty()
-///         .with_mysql("default", |m| m.host("127.0.0.1").user("root").password("pw").database("mydb"))
-///         .with_redis("cache", |r| r.url("redis://127.0.0.1:6379"))
-///         .build()?;
+///     let cfg = ConfigBuilder::from_env()?.build()?;
 ///     Ok(())
 /// }
 /// ```
 pub struct ConfigBuilder {
-    mode: Option<String>,
+    postgres: HashMap<String, PostgresConfig>,
     mysql: HashMap<String, MysqlConfig>,
     redis: HashMap<String, RedisConfig>,
     tracing: TracingConfig,
@@ -270,47 +266,10 @@ pub struct ConfigBuilder {
 }
 
 impl ConfigBuilder {
-    /// 创建 ConfigBuilder，自动确定运行模式并加载 `config/config.<mode>.toml`。
-    pub fn new() -> ConfigResult<Self> {
-        ::tracing::debug!("创建 ConfigBuilder");
-        let mut builder = Self::empty();
-        #[cfg(debug_assertions)]
-        {
-            builder = builder.with_mode("dev");
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            builder = builder.with_mode("online");
-        }
-        let prefix = builder.env_prefix.clone();
-        if let Ok(mode) = std::env::var(format!("{}_MODE", prefix)) {
-            if !mode.is_empty() {
-                builder = builder.with_mode(mode);
-            }
-        }
-        let mode = builder.mode.clone().unwrap_or_else(|| "dev".into());
-        let config_dir = Path::new("config");
-        let path = match find_mode_config(config_dir, &mode) {
-            Ok(p) => p,
-            Err(tried) => {
-                let paths = tried
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(Error::ModeConfigNotFound {
-                    path: paths,
-                    mode,
-                    prefix,
-                });
-            }
-        };
-        builder.with_file(&path)
-    }
-
+    /// 创建空 ConfigBuilder。
     pub fn empty() -> Self {
         Self {
-            mode: None,
+            postgres: HashMap::new(),
             mysql: HashMap::new(),
             redis: HashMap::new(),
             tracing: TracingConfig::default(),
@@ -318,22 +277,29 @@ impl ConfigBuilder {
         }
     }
 
-    /// 从 TOML 字符串创建 ConfigBuilder。
-    #[cfg(feature = "config-toml")]
-    pub fn from_toml(toml_str: &str) -> ConfigResult<Self> {
-        Self::empty().with_toml(toml_str)
+    /// 从 PostgreSQL 的 `app_config` 统一配置表读取全部配置。
+    ///
+    /// 仅在启用 `config-db` feature 时可用；连接串指向承载 `app_config` 表的数据库。
+    #[cfg(feature = "config-db")]
+    pub async fn from_database(url: &str) -> ConfigResult<Config> {
+        let store = db::load_config_store(url).await?;
+        let cfg = db::build_config(store, None)?;
+        cfg.validate()?;
+        Ok(cfg)
     }
 
-    /// 从 YAML 字符串创建 ConfigBuilder（需要 `config-yaml` feature）。
-    #[cfg(feature = "config-yaml")]
-    pub fn from_yaml(yaml_str: &str) -> ConfigResult<Self> {
-        Self::empty().with_yaml(yaml_str)
-    }
-
-    /// 从 JSON 字符串创建 ConfigBuilder（需要 `config-json` feature）。
-    #[cfg(feature = "config-json")]
-    pub fn from_json(json_str: &str) -> ConfigResult<Self> {
-        Self::empty().with_json(json_str)
+    /// 自动选择配置来源（推荐入口）：数据库为**唯一**结构化数据源，环境变量最高优先级覆盖。
+    ///
+    /// 1. 从 `APP_CONFIG_DATABASE_URL` / `CC_CONFIG_DB_URL` 环境变量读取引导连接串；
+    /// 2. 连接该库的 `app_config` 表读取全部配置；
+    /// 3. 用环境变量（`<PREFIX>_POSTGRES_*` / `<PREFIX>_MYSQL_*` / `<PREFIX>_REDIS_*` /
+    ///    `<PREFIX>_TRACING_*` / `<PREFIX>_MODE`）覆盖同名配置。
+    #[cfg(feature = "config-db")]
+    pub async fn auto() -> ConfigResult<Config> {
+        let url = db::config_database_url().ok_or(Error::ConfigDbUrlMissing)?;
+        let mut cfg = Self::from_database(&url).await?;
+        apply_env_overrides(&mut cfg, DEFAULT_ENV_PREFIX)?;
+        Ok(cfg)
     }
 
     /// 从环境变量创建 ConfigBuilder。
@@ -347,80 +313,32 @@ impl ConfigBuilder {
         self
     }
 
-    /// 设置运行模式（如 `"dev"`、`"online"`）。
-    pub fn with_mode(mut self, mode: impl Into<String>) -> Self {
-        let mode = mode.into();
-        ::tracing::info!(mode = %mode, "设置运行模式");
-        self.mode = Some(mode);
-        self
-    }
-
-    /// 获取当前运行模式。
-    pub fn mode(&self) -> Option<&str> {
-        self.mode.as_deref()
-    }
-
-    /// 从配置文件加载，根据扩展名自动选择解析器。
-    pub fn with_file<P: AsRef<Path>>(self, path: P) -> ConfigResult<Self> {
-        let path = path.as_ref();
-        ::tracing::info!(path = %path.display(), "加载配置文件");
-        let text = std::fs::read_to_string(path).map_err(|e| Error::ConfigFileRead {
-            path: path.display().to_string(),
-            source: e,
-        })?;
-
-        match path.extension().and_then(|e| e.to_str()) {
-            #[cfg(feature = "config-toml")]
-            Some("toml") => self.with_toml(&text),
-            #[cfg(feature = "config-yaml")]
-            Some("yaml") | Some("yml") => self.with_yaml(&text),
-            #[cfg(feature = "config-json")]
-            Some("json") => self.with_json(&text),
-            Some(ext) => Err(Error::ConfigParse {
-                format: ext.to_string(),
-                message: "不支持的配置文件格式".into(),
-            }),
-            None => Err(Error::ConfigParse {
-                format: "unknown".into(),
-                message: "无法识别配置文件扩展名".into(),
-            }),
-        }
-    }
-
-    /// 从内联 TOML 字符串加载（方便测试和动态配置）。
-    #[cfg(feature = "config-toml")]
-    pub fn with_toml(self, toml_str: &str) -> ConfigResult<Self> {
-        ::tracing::debug!("解析 TOML 配置");
-        let file_cfg: Config = toml::from_str(toml_str)?;
-        Ok(self.merge(file_cfg))
-    }
-
-    /// 从内联 YAML 字符串加载（需要 `config-yaml` feature）。
-    #[cfg(feature = "config-yaml")]
-    pub fn with_yaml(self, yaml_str: &str) -> ConfigResult<Self> {
-        ::tracing::debug!("解析 YAML 配置");
-        let file_cfg: Config = yaml_serde::from_str(yaml_str)?;
-        Ok(self.merge(file_cfg))
-    }
-
-    /// 从内联 JSON 字符串加载（需要 `config-json` feature）。
-    #[cfg(feature = "config-json")]
-    pub fn with_json(self, json_str: &str) -> ConfigResult<Self> {
-        ::tracing::debug!("解析 JSON 配置");
-        let file_cfg: Config = serde_json::from_str(json_str)?;
-        Ok(self.merge(file_cfg))
-    }
-
-    /// 读取环境变量覆盖。格式：`<PREFIX>_MYSQL_<NAME>_<FIELD>` / `<PREFIX>_REDIS_<NAME>_<FIELD>` / `<PREFIX>_TRACING_<FIELD>`
+    /// 读取环境变量覆盖。格式：`<PREFIX>_POSTGRES_<NAME>_<FIELD>` / `<PREFIX>_MYSQL_<NAME>_<FIELD>` / `<PREFIX>_REDIS_<NAME>_<FIELD>` / `<PREFIX>_TRACING_<FIELD>` / `<PREFIX>_MODE`
     pub fn with_env(mut self) -> ConfigResult<Self> {
-        let prefix = &self.env_prefix;
+        let prefix = self.env_prefix.clone();
         ::tracing::debug!(prefix = %prefix, "读取环境变量配置");
+        self.postgres
+            .extend(postgres::collect_env_postgres(&prefix, &self.postgres)?);
         self.mysql
-            .extend(mysql::collect_env_mysql(prefix, &self.mysql)?);
+            .extend(mysql::collect_env_mysql(&prefix, &self.mysql)?);
         self.redis
-            .extend(redis::collect_env_redis(prefix, &self.redis)?);
-        self.tracing = tracing::collect_env_tracing(prefix, &self.tracing)?;
+            .extend(redis::collect_env_redis(&prefix, &self.redis)?);
+        self.tracing = tracing::collect_env_tracing(&prefix, &self.tracing)?;
         Ok(self)
+    }
+
+    /// 程序化添加 / 覆盖单个 PostgreSQL 连接。
+    pub fn with_postgres(
+        mut self,
+        name: impl Into<String>,
+        f: impl FnOnce(PostgresConfigBuilder) -> PostgresConfigBuilder,
+    ) -> Self {
+        let name = name.into();
+        ::tracing::debug!(name = %name, "配置 PostgreSQL 连接");
+        let base = self.postgres.remove(&name).unwrap_or_default();
+        let cfg = f(PostgresConfigBuilder(base)).0;
+        self.postgres.insert(name, cfg);
+        self
     }
 
     /// 程序化添加 / 覆盖单个 MySQL 连接。
@@ -462,29 +380,22 @@ impl ConfigBuilder {
         self
     }
 
-    /// 合并另一个 Config（other 覆盖 self）。
-    pub fn merge(mut self, other: Config) -> Self {
-        ::tracing::debug!(
-            mysql_count = other.mysql.len(),
-            redis_count = other.redis.len(),
-            "合并配置"
-        );
-        self.mysql.extend(other.mysql);
-        self.redis.extend(other.redis);
-        self.tracing = other.tracing;
-        self
-    }
-
     /// 构建最终配置并验证。
     pub fn build(self) -> ConfigResult<Config> {
+        let mode = std::env::var(format!("{}_MODE", self.env_prefix))
+            .ok()
+            .filter(|v| !v.is_empty());
         let cfg = Config {
-            mode: self.mode,
+            mode,
+            postgres: self.postgres,
             mysql: self.mysql,
             redis: self.redis,
             tracing: self.tracing,
+            store: ConfigStore::new(),
         };
         ::tracing::info!(
             mode = ?cfg.mode,
+            postgres_count = cfg.postgres.len(),
             mysql_count = cfg.mysql.len(),
             redis_count = cfg.redis.len(),
             tracing_level = %cfg.tracing.level,
@@ -496,6 +407,22 @@ impl ConfigBuilder {
     }
 }
 
+/// 用环境变量覆盖 `Config` 中已加载的数据库配置（最高优先级）。
+#[cfg(feature = "config-db")]
+fn apply_env_overrides(cfg: &mut Config, prefix: &str) -> ConfigResult<()> {
+    cfg.postgres = postgres::collect_env_postgres(prefix, &cfg.postgres)?;
+    cfg.mysql = mysql::collect_env_mysql(prefix, &cfg.mysql)?;
+    cfg.redis = redis::collect_env_redis(prefix, &cfg.redis)?;
+    cfg.tracing = tracing::collect_env_tracing(prefix, &cfg.tracing)?;
+    if let Ok(m) = std::env::var(format!("{}_MODE", prefix)) {
+        if !m.is_empty() {
+            cfg.mode = Some(m);
+        }
+    }
+    cfg.validate()?;
+    Ok(())
+}
+
 // ──────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────
@@ -504,169 +431,43 @@ impl ConfigBuilder {
 mod tests {
     use super::*;
 
-    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    struct SetCurrentDir {
-        prev: std::path::PathBuf,
-    }
-
-    impl SetCurrentDir {
-        fn new(dir: &std::path::Path) -> Self {
-            let prev = std::env::current_dir().unwrap();
-            std::env::set_current_dir(dir).unwrap();
-            Self { prev }
-        }
-    }
-
-    impl Drop for SetCurrentDir {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.prev);
-        }
-    }
-
-    #[cfg(feature = "config-toml")]
     #[test]
-    fn parses_toml() {
-        let toml = r#"
-            [mysql.default]
-            host = "h1"
-            port = 3306
-            user = "u1"
-            password = "p1"
-            database = "db1"
-            max_connections = 1
-            ssl_mode = "preferred"
+    fn from_env_works() -> ConfigResult<()> {
+        std::env::set_var("ENV_WORKS_CC_MYSQL_DEFAULT_HOST", "env-host");
 
-            [redis.default]
-            url = "redis://127.0.0.1:6379"
-        "#;
-        let cfg = ConfigBuilder::from_toml(toml).unwrap().build().unwrap();
-        let d = cfg.mysql("default").unwrap();
-        assert_eq!(d.host, "h1");
-        assert_eq!(d.port, 3306);
-        assert_eq!(cfg.redis("default").unwrap().url, "redis://127.0.0.1:6379");
-    }
-
-    #[test]
-    fn builder_basic() {
         let cfg = ConfigBuilder::empty()
-            .with_mysql("default", |m| {
-                m.host("10.0.0.1")
-                    .port(3307)
-                    .user("root")
-                    .password("pw")
-                    .database("test")
-            })
-            .with_redis("cache", |r| r.url("redis://127.0.0.1:6380"))
-            .build()
-            .unwrap();
+            .env_prefix("ENV_WORKS_CC")
+            .with_mysql("default", |m| m.user("u").password("p").database("db"))
+            .with_env()?
+            .build()?;
 
-        assert_eq!(cfg.mysql("default").unwrap().port, 3307);
-        assert_eq!(cfg.redis("cache").unwrap().url, "redis://127.0.0.1:6380");
-    }
+        assert_eq!(cfg.mysql("default").unwrap().host, "env-host");
 
-    #[cfg(feature = "config-toml")]
-    #[test]
-    fn builder_merge_file() {
-        let toml = r#"
-            [mysql.default]
-            host = "file-host"
-            user = "file-user"
-            password = "file-pw"
-            database = "file-db"
-        "#;
-        let cfg = ConfigBuilder::empty()
-            .with_toml(toml)
-            .unwrap()
-            .build()
-            .unwrap();
-
-        assert_eq!(cfg.mysql("default").unwrap().host, "file-host");
+        std::env::remove_var("ENV_WORKS_CC_MYSQL_DEFAULT_HOST");
+        Ok(())
     }
 
     #[test]
-    fn from_map_works() {
-        let mut mysql = HashMap::new();
-        mysql.insert(
-            "default".into(),
-            MysqlConfig {
-                host: "h".into(),
-                port: 3306,
-                user: "u".into(),
-                password: "p".into(),
-                database: "db".into(),
-                max_connections: 5,
-                ssl_mode: "preferred".into(),
-                disable_sql_mode: false,
-                acquire_timeout: 5,
-                idle_timeout: 60,
-            },
-        );
-        let cfg = ConfigBuilder::empty()
-            .merge(Config {
-                mode: None,
-                mysql,
-                redis: HashMap::new(),
-                tracing: TracingConfig::default(),
-            })
-            .build()
-            .unwrap();
-        assert_eq!(cfg.mysql("default").unwrap().host, "h");
-    }
-
-    #[test]
-    fn env_prefix_override() {
+    fn env_prefix_override() -> ConfigResult<()> {
         std::env::set_var("TEST_CC_MYSQL_DEFAULT_HOST", "env-host");
         std::env::set_var("TEST_CC_REDIS_DEFAULT_URL", "redis://env:6379");
 
         let cfg = ConfigBuilder::empty()
             .env_prefix("TEST_CC")
             .with_mysql("default", |m| m.user("u").password("p").database("db"))
-            .with_env()
-            .unwrap()
-            .build()
-            .unwrap();
+            .with_env()?
+            .build()?;
 
         assert_eq!(cfg.mysql("default").unwrap().host, "env-host");
         assert_eq!(cfg.redis("default").unwrap().url, "redis://env:6379");
 
         std::env::remove_var("TEST_CC_MYSQL_DEFAULT_HOST");
         std::env::remove_var("TEST_CC_REDIS_DEFAULT_URL");
-    }
-
-    #[cfg(feature = "config-toml")]
-    #[test]
-    fn from_toml_works() {
-        let toml = r#"
-            [mysql.default]
-            host = "file-host"
-            user = "file-user"
-            password = "file-pw"
-            database = "file-db"
-        "#;
-        let cfg = ConfigBuilder::from_toml(toml).unwrap().build().unwrap();
-        assert_eq!(cfg.mysql("default").unwrap().host, "file-host");
+        Ok(())
     }
 
     #[test]
-    fn from_env_works() {
-        std::env::set_var("ENV_WORKS_CC_MYSQL_DEFAULT_HOST", "env-host");
-
-        let cfg = ConfigBuilder::empty()
-            .env_prefix("ENV_WORKS_CC")
-            .with_mysql("default", |m| m.user("u").password("p").database("db"))
-            .with_env()
-            .unwrap()
-            .build()
-            .unwrap();
-
-        assert_eq!(cfg.mysql("default").unwrap().host, "env-host");
-
-        std::env::remove_var("ENV_WORKS_CC_MYSQL_DEFAULT_HOST");
-    }
-
-    #[test]
-    fn mysql_names_iterator() {
+    fn mysql_names_iterator() -> ConfigResult<()> {
         let cfg = ConfigBuilder::empty()
             .with_mysql("primary", |m| {
                 m.host("h1").user("u").password("p").database("d")
@@ -674,114 +475,39 @@ mod tests {
             .with_mysql("replica", |m| {
                 m.host("h2").user("u").password("p").database("d")
             })
-            .build()
-            .unwrap();
+            .build()?;
 
         let mut names: Vec<_> = cfg.mysql_names().collect();
         names.sort();
         assert_eq!(names, vec!["primary", "replica"]);
+        Ok(())
     }
 
-    #[cfg(feature = "config-toml")]
     #[test]
-    fn new_loads_mode_file() {
-        let _lock = TEST_MUTEX.lock().unwrap();
-        let dir = std::env::temp_dir().join("cc_test_new_loads");
-        let _ = std::fs::remove_dir_all(&dir);
-        let config_dir = dir.join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
+    fn postgres_names_iterator() -> ConfigResult<()> {
+        let cfg = ConfigBuilder::empty()
+            .with_postgres("primary", |p| {
+                p.host("h1").user("u").password("p").database("d")
+            })
+            .with_postgres("replica", |p| {
+                p.host("h2").user("u").password("p").database("d")
+            })
+            .build()?;
 
-        std::fs::write(
-            config_dir.join("config.dev.toml"),
-            r#"
-                [mysql.default]
-                host = "dev-host"
-                port = 3307
-                user = "u"
-                password = "p"
-                database = "dev_db"
-            "#,
-        )
-        .unwrap();
-
-        std::env::remove_var("CC_MODE");
-        let _guard = SetCurrentDir::new(&dir);
-        let cfg = ConfigBuilder::new().unwrap().build().unwrap();
-
-        assert_eq!(cfg.mode(), Some("dev"));
-        assert_eq!(cfg.mysql("default").unwrap().host, "dev-host");
-        assert_eq!(cfg.mysql("default").unwrap().port, 3307);
-
-        drop(_guard);
-        let _ = std::fs::remove_dir_all(&dir);
+        let mut names: Vec<_> = cfg.postgres_names().collect();
+        names.sort();
+        assert_eq!(names, vec!["primary", "replica"]);
+        Ok(())
     }
 
-    #[cfg(feature = "config-toml")]
     #[test]
-    fn new_missing_mode_errors() {
-        let _lock = TEST_MUTEX.lock().unwrap();
-        let dir = std::env::temp_dir().join("cc_test_new_missing");
-        let _ = std::fs::remove_dir_all(&dir);
-        let config_dir = dir.join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-
-        let _guard = SetCurrentDir::new(&dir);
-        std::env::set_var("CC_MODE", "dev");
-        let result = ConfigBuilder::new();
-        std::env::remove_var("CC_MODE");
-        match result {
-            Err(Error::ModeConfigNotFound { mode, path, .. }) => {
-                assert_eq!(mode, "dev");
-                assert!(
-                    path.contains("config.dev.toml"),
-                    "unexpected path: {}",
-                    path
-                );
-            }
-            other => panic!("expected Err(ModeConfigNotFound), got {:?}", other.is_ok()),
-        }
-
-        drop(_guard);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[cfg(feature = "config-toml")]
-    #[test]
-    fn new_env_mode_override() {
-        let _lock = TEST_MUTEX.lock().unwrap();
-        let dir = std::env::temp_dir().join("cc_test_new_env");
-        let _ = std::fs::remove_dir_all(&dir);
-        let config_dir = dir.join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-
-        std::fs::write(
-            config_dir.join("config.online.toml"),
-            r#"
-                [mysql.default]
-                host = "online-host"
-                port = 3306
-                user = "u"
-                password = "p"
-                database = "db"
-
-                [tracing]
-                level = "warn"
-                format = "json"
-            "#,
-        )
-        .unwrap();
-
-        let _guard = SetCurrentDir::new(&dir);
-        std::env::set_var("CC_MODE", "online");
-        let cfg = ConfigBuilder::new().unwrap().build().unwrap();
-        std::env::remove_var("CC_MODE");
-
-        assert_eq!(cfg.mode(), Some("online"));
-        assert_eq!(cfg.mysql("default").unwrap().host, "online-host");
-        assert_eq!(cfg.tracing.level, "warn");
-        assert_eq!(cfg.tracing.format, "json");
-
-        drop(_guard);
-        let _ = std::fs::remove_dir_all(&dir);
+    fn env_mode_sets_mode() {
+        std::env::set_var("MODE_CC_MODE", "staging");
+        let cfg = ConfigBuilder::empty()
+            .env_prefix("MODE_CC")
+            .build()
+            .unwrap();
+        assert_eq!(cfg.mode(), Some("staging"));
+        std::env::remove_var("MODE_CC_MODE");
     }
 }

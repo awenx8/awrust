@@ -2,27 +2,35 @@
 
 ## 配置
 
+全部示例通过 `ConfigBuilder::auto()` 从 PostgreSQL 的 `app_config` 统一配置表读取配置。
+设置数据库引导连接串环境变量后运行：
+
 ```bash
-[ -f config/config.dev.toml ] || cp config/config.example.toml config/config.dev.toml
+export APP_CONFIG_DATABASE_URL=postgres://postgres:secret@127.0.0.1:5432/configdb
 ```
 
-按需修改 `config/config.dev.toml` 中的连接信息后运行示例。
-
-示例默认按编译模式加载对应文件：debug → `config.dev.toml`，release → `config.online.toml`。
-可通过 `CC_MODE=<name>` 环境变量切换到任意命名配置（加载 `config/config.<name>.toml`）。
+注：`http_client` 仅读取 tracing 配置，使用 `ConfigBuilder::from_env()` 从环境变量构建，无需数据库。
 
 ## 示例列表
 
-### basic_config - 配置加载
+### config_from_db - 从数据库读取全部配置
 
 ```bash
-cargo run --example basic_config
+cargo run --example config_from_db
+```
+
+### postgres_connect - PostgreSQL 连接（默认）
+
+```bash
+cargo run --example postgres_connect
 ```
 
 ### mysql_connect - MySQL 连接
 
+启用 `mysql` feature 后运行：
+
 ```bash
-cargo run --example mysql_connect
+cargo run --example mysql_connect --features mysql
 ```
 
 ### redis_connect - Redis 连接
@@ -33,7 +41,7 @@ cargo run --example redis_connect
 
 ### graceful_shutdown - 优雅关闭
 
-监听 OS 信号（SIGTERM / SIGINT），按注册逆序执行关闭回调，支持 MySQL 连接池和 Redis 管理器的一键关闭。
+监听 OS 信号（SIGTERM / SIGINT），按注册逆序执行关闭回调，支持 PostgreSQL 连接池和 Redis 管理器的一键关闭。
 
 ```bash
 cargo run --example graceful_shutdown

@@ -1,11 +1,11 @@
-use cc_core::{redis::RedisManager, ConfigBuilder, IntoRedisName};
+use cc_core::{redis::RedisManager, ConfigBuilder, IntoConnectionName};
 use redis::AsyncTypedCommands;
 
 enum RedisName {
     Default,
 }
 
-impl IntoRedisName for RedisName {
+impl IntoConnectionName for RedisName {
     fn into_name(self) -> String {
         match self {
             Self::Default => "default".into(),
@@ -15,7 +15,8 @@ impl IntoRedisName for RedisName {
 
 #[tokio::main]
 async fn main() -> cc_core::ConfigResult<()> {
-    let config = ConfigBuilder::new()?.build()?;
+    // 从配置文件读取 PostgreSQL 引导连接，其余配置从 app_config 表加载
+    let config = ConfigBuilder::auto().await?;
 
     cc_core::tracing::init_tracing(&config.tracing)?;
 
