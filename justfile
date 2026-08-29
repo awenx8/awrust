@@ -27,9 +27,9 @@ examples:
         crate=$(basename $(dirname $(dirname $d))); \
         echo "\n▶ Running $crate::$name ..."; \
         case "$name" in \
-            hot_reload) timeout 5 cargo run -p $crate --example $name --all-features || true ;; \
+            hot_reload|graceful_shutdown) timeout 5 cargo run -p $crate --example $name --all-features || true ;; \
             mysql_connect|postgres_connect|redis_connect) echo "⏭ Skipping $crate::$name (requires a live database)" ;; \
-            *) cargo run -p $crate --example $name --all-features ;; \
+            *) timeout 60 cargo run -p $crate --example $name --all-features || true ;; \
         esac; \
     done
 

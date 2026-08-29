@@ -2,6 +2,9 @@
 //! 然后等待 OS 信号（Ctrl+C / SIGTERM）自动逆序关闭所有资源。
 //!
 //! 运行：`cargo run --example graceful_shutdown`
+//!
+//! 配置来源：仓库根目录 `.env` 中的 `APP_CONFIG_DATABASE_URL`
+//! （承载 `app_config` 统一配置表的 PostgreSQL 数据库）。
 
 use cc_core::postgres::PostgresPools;
 use cc_core::redis::RedisManager;
@@ -9,7 +12,11 @@ use cc_core::{ConfigBuilder, GracefulShutdown};
 
 #[tokio::main]
 async fn main() -> cc_core::ConfigResult<()> {
-    // 1. 加载配置：从环境变量读取引导连接串，连接其 app_config 表加载全部配置
+    // 0. 加载 `.env`，提供引导连接串
+    dotenvy::dotenv().ok();
+
+    // 1. 加载配置：从 `.env` 的 APP_CONFIG_DATABASE_URL 读取引导连接串，
+    //    连接其 app_config 表加载全部配置。
     let config = ConfigBuilder::auto().await?;
 
     // 初始化 tracing 日志
