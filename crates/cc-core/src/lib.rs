@@ -1,10 +1,10 @@
 //! # cc-core
 //!
-//! 公共核心库：数据库 + 环境变量配置系统 + PostgreSQL / MySQL / Redis 连接管理 + Tracing 日志初始化 + HTTP 客户端 + 优雅关闭。
+//! 公共核心库：数据库配置系统 + PostgreSQL / MySQL / Redis 连接管理 + Tracing 日志初始化 + HTTP 客户端 + 优雅关闭。
 //!
 //! ## 特性
 //!
-//! - **配置加载（config-db，默认）** — 全部配置集中存储在 PostgreSQL 的 `app_config` 统一配置表，支持 `ConfigBuilder::from_database` / `auto()`；环境变量（`APP_CONFIG_DATABASE_URL` 等）作为引导与最高优先级覆盖
+//! - **配置加载（config-db，默认）** — 全部配置集中存储在 PostgreSQL 的 `app_config` 统一配置表，支持 `ConfigBuilder::from_database` / `auto()`；仅 `APP_CONFIG_DATABASE_URL` / `CC_CONFIG_DB_URL` 作为定位引导库的数据库连接串，其余配置均来自 `app_config` 表
 //! - **PostgreSQL 连接池（默认）** — 多命名连接池管理，支持健康检查和优雅关闭
 //! - **MySQL 连接池（可选）** — 多命名连接池管理，支持健康检查和优雅关闭
 //! - **Redis 连接管理** — 多命名连接管理，支持自动重连和多路复用

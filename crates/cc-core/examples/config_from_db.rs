@@ -11,8 +11,25 @@
 #[cfg(feature = "config-db")]
 #[tokio::main]
 async fn main() -> cc_core::ConfigResult<()> {
+    // 加载 `.env`（若存在）中的引导连接串等环境变量。
+    dotenvy::dotenv().ok();
+
     // 自动选择来源：检测到 APP_CONFIG_DATABASE_URL 时从数据库读取全部配置。
-    let config = cc_core::ConfigBuilder::auto().await?;
+    let config = match cc_core::ConfigBuilder::auto().await {
+        Ok(config) => config,
+        Err(cc_core::Error::ConfigDbUrlMissing) => {
+            eprintln!(
+                "未设置引导连接串，请通过环境变量指定承载 app_config 表的数据库：\n\
+                 \x20\x20APP_CONFIG_DATABASE_URL=postgres://postgres:secret@127.0.0.1:5432/configdb \\\n\
+                 \x20\x20cargo run -p cc-core --features config-db --example config_from_db"
+            );
+            std::process::exit(2);
+        }
+        Err(e) => {
+            eprintln!("加载配置失败: {e}");
+            std::process::exit(1);
+        }
+    };
 
     cc_core::tracing::init_tracing(&config.tracing)?;
 

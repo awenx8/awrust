@@ -29,6 +29,8 @@ tokio = { workspace = true, features = ["full"] }
 tracing-subscriber = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 
+[dev-dependencies]
+dotenvy = { workspace = true }
 
 [[example]]
 name = "config_from_db"

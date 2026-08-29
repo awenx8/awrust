@@ -1,6 +1,6 @@
 # awrust
 
-Rust 工作空间，包含 `cc-core` 核心公共库——提供「数据库 + 环境变量」配置系统 + PostgreSQL / MySQL / Redis
+Rust 工作空间，包含 `cc-core` 核心公共库——提供数据库配置系统 + PostgreSQL / MySQL / Redis
 连接管理 + Tracing 日志初始化 + HTTP 客户端 + 优雅关闭。
 
 ## 项目结构
@@ -11,7 +11,7 @@ awrust/
 │   └── cc-core/              # 核心公共库
 │       ├── src/
 │       │   ├── lib.rs
-│       │   ├── config/       # 数据库 + 环境变量配置系统
+│       │   ├── config/       # 数据库配置系统
 │       │   ├── postgres.rs   # PostgreSQL 连接池管理（默认）
 │       │   ├── mysql.rs      # MySQL 连接池管理（可选）
 │       │   ├── redis.rs      # Redis 连接管理
@@ -38,10 +38,10 @@ cargo add cc-core
 cargo add cc-core --features mysql
 ```
 
-### 配置来源（仅数据库与环境变量）
+### 配置来源（仅数据库）
 
 全部配置集中存储在 PostgreSQL 的 `app_config` 统一配置表，由 `ConfigBuilder::auto()`
-（默认启用 `config-db` 特性）读取；数据库引导连接串与逐连接覆盖均来自环境变量：
+（默认启用 `config-db` 特性）读取；除引导连接串外，**不**使用任何环境变量覆盖。
 
 ```bash
 export APP_CONFIG_DATABASE_URL=postgres://postgres:secret@127.0.0.1:5432/configdb
@@ -60,15 +60,14 @@ INSERT INTO app_config (group_name, key, value) VALUES
 
 - 加载入口：`ConfigBuilder::auto()` 将数据库作为**唯一**结构化数据源，引导连接串取自
   `APP_CONFIG_DATABASE_URL` / `CC_CONFIG_DB_URL` 环境变量；未设置时返回错误。
-- 环境变量作为最高优先级覆盖：`CC_MODE=<name>`、`CC_POSTGRES_<NAME>_URL`、
-  `CC_MYSQL_<NAME>_URL`、`CC_REDIS_<NAME>_URL`、`CC_TRACING_LEVEL`、`CC_TRACING_FORMAT`。
-- 仅从环境变量构建（无需数据库）：`ConfigBuilder::from_env()?.build()?`。
+- 运行模式、各连接参数与 tracing 配置均只来自 `app_config` 表。
 - PostgreSQL / MySQL 也兼容逐字段（host/port/user/password/database）回退写法，
-  url 模式下非空的 host/user/password/database 字段仍可覆盖连接串中的对应部分。
+  连接串模式与字段模式在同一分组内可混用。
 
 ### 功能特性
 
-- **数据库驱动配置（config-db，默认启用）** — 数据库为唯一结构化数据源；环境变量提供引导连接串与最高优先级覆盖
+- **数据库驱动配置（config-db，默认启用）** — 数据库为唯一结构化数据源；仅
+  `APP_CONFIG_DATABASE_URL` / `CC_CONFIG_DB_URL` 用于定位引导库
 - **PostgreSQL 连接池（默认）** — 多命名连接池管理，支持健康检查和优雅关闭
 - **MySQL 连接池（可选）** — 多命名连接池管理，支持健康检查和优雅关闭
 - **Redis 连接管理** — 多命名连接管理，支持自动重连和多路复用

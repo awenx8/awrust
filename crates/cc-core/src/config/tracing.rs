@@ -95,42 +95,6 @@ impl TracingConfigBuilder {
 }
 
 // ──────────────────────────────────────────────
-// 环境变量解析
-// ──────────────────────────────────────────────
-
-/// 从环境变量读取 tracing 配置覆盖。
-/// 支持 `<PREFIX>_TRACING_LEVEL` / `<PREFIX>_TRACING_FORMAT` 格式。
-pub(crate) fn collect_env_tracing(
-    prefix: &str,
-    existing: &TracingConfig,
-) -> ConfigResult<TracingConfig> {
-    let mut result = existing.clone();
-    let pfx_upper = prefix.to_uppercase();
-    let prefix_tracing = format!("{pfx_upper}_TRACING_");
-
-    for (key, val) in std::env::vars() {
-        let upper = key.to_uppercase();
-        let rest = match upper.strip_prefix(&prefix_tracing) {
-            Some(r) => r,
-            None => continue,
-        };
-
-        match rest {
-            "LEVEL" => {
-                ::tracing::trace!(key = %key, "读取 tracing LEVEL 环境变量");
-                result.level = val;
-            }
-            "FORMAT" => {
-                ::tracing::trace!(key = %key, "读取 tracing FORMAT 环境变量");
-                result.format = val;
-            }
-            _ => {}
-        }
-    }
-    Ok(result)
-}
-
-// ──────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────
 

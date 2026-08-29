@@ -1,0 +1,6 @@
+[submodule "awenv"]
+	path = vendor/awenv
+	url = git@github.com:awenx8/awenv.git
+[submodule "awdocker"]
+	path = vendor/awdocker
+	url = git@github.com:awenx8/awdocker.git

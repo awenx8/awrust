@@ -1,8 +1,11 @@
 help:
     @echo ""
 
-env:
-    bun install -g @biomejs/biome rumdl
+setup:
+    @just -f vendor/awenv/justfile setup
+    @just -f vendor/awdocker/justfile up postgres
+    @if [ ! -f .env ] && [ -f .env.example ]; then cp .env.example .env && echo ">> created .env from .env.example"; fi
+    @echo ">> setup done: env ready, postgres started"
 
 fmt:
     biome format --write .

@@ -1,9 +1,6 @@
-use std::collections::HashMap;
-
 use serde::Deserialize;
 
 use super::Validate;
-use super::split_env_field;
 use crate::error::{ConfigResult, Error};
 
 // ──────────────────────────────────────────────
@@ -54,45 +51,6 @@ impl RedisConfigBuilder {
         self.0.url = v.into();
         self
     }
-}
-
-// ──────────────────────────────────────────────
-// 环境变量解析
-// ──────────────────────────────────────────────
-
-const REDIS_ENV_FIELDS: &[&str] = &["URL"];
-
-pub(crate) fn collect_env_redis(
-    prefix: &str,
-    existing: &HashMap<String, RedisConfig>,
-) -> ConfigResult<HashMap<String, RedisConfig>> {
-    let mut result = HashMap::new();
-    let pfx_upper = prefix.to_uppercase();
-    let prefix_redis = format!("{pfx_upper}_REDIS_");
-
-    for (key, val) in std::env::vars() {
-        let upper = key.to_uppercase();
-        let rest = match upper.strip_prefix(&prefix_redis) {
-            Some(r) => r,
-            None => continue,
-        };
-
-        let (name, field) = match split_env_field(rest, REDIS_ENV_FIELDS) {
-            Some(v) => v,
-            None => continue,
-        };
-
-        tracing::trace!(key = %key, name = %name, field = %field, "读取 Redis 环境变量");
-
-        let entry = result
-            .entry(name.clone())
-            .or_insert_with(|| existing.get(&name).cloned().unwrap_or_default());
-
-        if field == "URL" {
-            entry.url = val;
-        }
-    }
-    Ok(result)
 }
 
 // ──────────────────────────────────────────────

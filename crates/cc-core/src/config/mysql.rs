@@ -1,9 +1,6 @@
-use std::collections::HashMap;
-
 use serde::Deserialize;
 
 use super::Validate;
-use super::split_env_field;
 use crate::error::{ConfigResult, Error};
 
 // ──────────────────────────────────────────────
@@ -199,90 +196,6 @@ impl MysqlConfigBuilder {
         self.0.idle_timeout = v;
         self
     }
-}
-
-// ──────────────────────────────────────────────
-// 环境变量解析
-// ──────────────────────────────────────────────
-
-const MYSQL_ENV_FIELDS: &[&str] = &[
-    "URL",
-    "HOST",
-    "PORT",
-    "USER",
-    "PASSWORD",
-    "DATABASE",
-    "MAX_CONNECTIONS",
-    "SSL_MODE",
-    "DISABLE_SQL_MODE",
-    "ACQUIRE_TIMEOUT",
-    "IDLE_TIMEOUT",
-];
-
-pub(crate) fn collect_env_mysql(
-    prefix: &str,
-    existing: &HashMap<String, MysqlConfig>,
-) -> ConfigResult<HashMap<String, MysqlConfig>> {
-    let mut result = HashMap::new();
-    let pfx_upper = prefix.to_uppercase();
-    let prefix_mysql = format!("{pfx_upper}_MYSQL_");
-
-    for (key, val) in std::env::vars() {
-        let upper = key.to_uppercase();
-        let rest = match upper.strip_prefix(&prefix_mysql) {
-            Some(r) => r,
-            None => continue,
-        };
-
-        let (name, field) = match split_env_field(rest, MYSQL_ENV_FIELDS) {
-            Some(v) => v,
-            None => continue,
-        };
-
-        tracing::trace!(key = %key, name = %name, field = %field, "读取 MySQL 环境变量");
-
-        let entry = result
-            .entry(name.clone())
-            .or_insert_with(|| existing.get(&name).cloned().unwrap_or_default());
-
-        match field {
-            "URL" => entry.url = val,
-            "HOST" => entry.host = val,
-            "PORT" => {
-                entry.port = val.parse().map_err(|e| Error::EnvParse {
-                    key: key.clone(),
-                    message: format!("PORT: {}", e),
-                })?
-            }
-            "USER" => entry.user = val,
-            "PASSWORD" => entry.password = val,
-            "DATABASE" => entry.database = val,
-            "MAX_CONNECTIONS" => {
-                entry.max_connections = val.parse().map_err(|e| Error::EnvParse {
-                    key: key.clone(),
-                    message: format!("MAX_CONNECTIONS: {}", e),
-                })?
-            }
-            "SSL_MODE" => entry.ssl_mode = val,
-            "DISABLE_SQL_MODE" => {
-                entry.disable_sql_mode = matches!(val.to_lowercase().as_str(), "1" | "true" | "yes")
-            }
-            "ACQUIRE_TIMEOUT" => {
-                entry.acquire_timeout = val.parse().map_err(|e| Error::EnvParse {
-                    key: key.clone(),
-                    message: format!("ACQUIRE_TIMEOUT: {}", e),
-                })?
-            }
-            "IDLE_TIMEOUT" => {
-                entry.idle_timeout = val.parse().map_err(|e| Error::EnvParse {
-                    key: key.clone(),
-                    message: format!("IDLE_TIMEOUT: {}", e),
-                })?
-            }
-            _ => {}
-        }
-    }
-    Ok(result)
 }
 
 // ──────────────────────────────────────────────

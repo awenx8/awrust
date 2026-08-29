@@ -140,11 +140,6 @@ pub enum Error {
         source: redis::RedisError,
     },
 
-    // ── 环境变量相关 ──
-    /// 环境变量解析失败。
-    #[error("环境变量 {key} 解析失败: {message}")]
-    EnvParse { key: String, message: String },
-
     // ── Tracing 相关 ──
     /// tracing subscriber 已初始化，不可重复调用。
     #[cfg(feature = "tracing-init")]

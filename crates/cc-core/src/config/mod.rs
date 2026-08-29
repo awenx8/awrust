@@ -1,11 +1,12 @@
-//! 配置系统：配置来源仅保留 **数据库** 与 **环境变量** 两种。
+//! 配置系统：配置来源**唯一**为 **数据库**。
 //!
 //! - **数据库（默认，`config-db` feature）** — 全部配置集中存储在 PostgreSQL 的 `app_config`
 //!   统一配置表，由 `ConfigBuilder::from_database(url)` 或 `ConfigBuilder::auto()` 读取。
 //!   `auto()` 使用 `APP_CONFIG_DATABASE_URL` / `CC_CONFIG_DB_URL` 环境变量定位引导连接，
 //!   连接该库的 `app_config` 表读取其余全部配置；数据库为**唯一**结构化数据源。
-//! - **环境变量** — 数据库引导连接串、运行模式（`CC_MODE`）与逐连接覆盖（如
-//!   `CC_POSTGRES_<NAME>_URL`）均来自环境变量，并作为最高优先级覆盖数据库中的同名配置。
+//!
+//! 除引导连接串外，环境变量**不**参与任何配置覆盖；运行模式、各连接参数与 tracing
+//! 配置均只来自 `app_config` 表。
 //!
 //! # 数据库配置表结构
 //!
@@ -15,19 +16,11 @@
 //!
 //! 分组到 cc-core 配置的映射约定见 `config-db` feature 下的数据库加载模块文档。
 //!
-//! # 环境变量格式
+//! # 引导连接串环境变量
 //!
 //! ```text
 //! APP_CONFIG_DATABASE_URL=postgres://postgres:secret@127.0.0.1:5432/configdb
 //! CC_CONFIG_DB_URL=postgres://postgres:secret@127.0.0.1:5432/configdb
-//!
-//! CC_MODE=dev
-//!
-//! CC_POSTGRES_<NAME>_URL=postgres://postgres:secret@127.0.0.1:5432/mydb
-//! CC_MYSQL_<NAME>_URL=mysql://root:secret@127.0.0.1:3306/mydb
-//! CC_REDIS_<NAME>_URL=redis://127.0.0.1:6379
-//! CC_TRACING_LEVEL=info
-//! CC_TRACING_FORMAT=json
 //! ```
 
 #[cfg(feature = "config-db")]
@@ -48,9 +41,6 @@ use serde::Deserialize;
 
 use crate::error::{ConfigResult, Error};
 
-/// 默认环境变量前缀。
-pub const DEFAULT_ENV_PREFIX: &str = "CC";
-
 // ──────────────────────────────────────────────
 // 数据库配置值
 // ──────────────────────────────────────────────
@@ -67,22 +57,6 @@ pub(crate) fn parse_bool(s: &str) -> Option<bool> {
         "false" | "0" | "no" | "off" => Some(false),
         _ => None,
     }
-}
-
-/// 从 `NAME_FIELD` 格式的字符串中，按已知字段名列表从右匹配，拆分出 (name, field)。
-pub(crate) fn split_env_field<'a>(
-    rest: &'a str,
-    known_fields: &[&'a str],
-) -> Option<(String, &'a str)> {
-    for &field in known_fields {
-        let suffix = format!("_{field}");
-        if let Some(name) = rest.strip_suffix(&suffix)
-            && !name.is_empty()
-        {
-            return Some((name.to_lowercase(), field));
-        }
-    }
-    None
 }
 
 // ──────────────────────────────────────────────
@@ -236,7 +210,7 @@ impl Validate for Config {
 // ConfigBuilder
 // ──────────────────────────────────────────────
 
-/// 配置构建器：从数据库（`config-db`）或环境变量加载，环境变量作为最高优先级覆盖。
+/// 配置构建器：从数据库（`config-db`）读取全部配置，或以编程方式构建。
 ///
 /// 从数据库读取全部配置（推荐入口）：
 /// ```rust,no_run
@@ -247,22 +221,11 @@ impl Validate for Config {
 /// # Ok(())
 /// # }
 /// ```
-///
-/// 仅从环境变量构建（无需数据库）：
-/// ```rust
-/// use cc_core::{ConfigBuilder, ConfigResult};
-///
-/// fn main() -> ConfigResult<()> {
-///     let cfg = ConfigBuilder::from_env()?.build()?;
-///     Ok(())
-/// }
-/// ```
 pub struct ConfigBuilder {
     postgres: HashMap<String, PostgresConfig>,
     mysql: HashMap<String, MysqlConfig>,
     redis: HashMap<String, RedisConfig>,
     tracing: TracingConfig,
-    env_prefix: String,
 }
 
 impl ConfigBuilder {
@@ -273,7 +236,6 @@ impl ConfigBuilder {
             mysql: HashMap::new(),
             redis: HashMap::new(),
             tracing: TracingConfig::default(),
-            env_prefix: DEFAULT_ENV_PREFIX.to_string(),
         }
     }
 
@@ -288,43 +250,15 @@ impl ConfigBuilder {
         Ok(cfg)
     }
 
-    /// 自动选择配置来源（推荐入口）：数据库为**唯一**结构化数据源，环境变量最高优先级覆盖。
+    /// 自动选择配置来源（推荐入口）：数据库为**唯一**结构化数据源。
     ///
     /// 1. 从 `APP_CONFIG_DATABASE_URL` / `CC_CONFIG_DB_URL` 环境变量读取引导连接串；
-    /// 2. 连接该库的 `app_config` 表读取全部配置；
-    /// 3. 用环境变量（`<PREFIX>_POSTGRES_*` / `<PREFIX>_MYSQL_*` / `<PREFIX>_REDIS_*` /
-    ///    `<PREFIX>_TRACING_*` / `<PREFIX>_MODE`）覆盖同名配置。
+    /// 2. 连接该库的 `app_config` 表读取全部配置（含运行模式、各连接与 tracing 配置）。
     #[cfg(feature = "config-db")]
     pub async fn auto() -> ConfigResult<Config> {
-        let url = db::config_database_url().ok_or(Error::ConfigDbUrlMissing)?;
-        let mut cfg = Self::from_database(&url).await?;
-        apply_env_overrides(&mut cfg, DEFAULT_ENV_PREFIX)?;
+        let url = db::config_database_url().ok_or(crate::error::Error::ConfigDbUrlMissing)?;
+        let cfg = Self::from_database(&url).await?;
         Ok(cfg)
-    }
-
-    /// 从环境变量创建 ConfigBuilder。
-    pub fn from_env() -> ConfigResult<Self> {
-        Self::empty().with_env()
-    }
-
-    /// 设置环境变量前缀（默认 "CC"）。
-    pub fn env_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.env_prefix = prefix.into();
-        self
-    }
-
-    /// 读取环境变量覆盖。格式：`<PREFIX>_POSTGRES_<NAME>_<FIELD>` / `<PREFIX>_MYSQL_<NAME>_<FIELD>` / `<PREFIX>_REDIS_<NAME>_<FIELD>` / `<PREFIX>_TRACING_<FIELD>` / `<PREFIX>_MODE`
-    pub fn with_env(mut self) -> ConfigResult<Self> {
-        let prefix = self.env_prefix.clone();
-        ::tracing::debug!(prefix = %prefix, "读取环境变量配置");
-        self.postgres
-            .extend(postgres::collect_env_postgres(&prefix, &self.postgres)?);
-        self.mysql
-            .extend(mysql::collect_env_mysql(&prefix, &self.mysql)?);
-        self.redis
-            .extend(redis::collect_env_redis(&prefix, &self.redis)?);
-        self.tracing = tracing::collect_env_tracing(&prefix, &self.tracing)?;
-        Ok(self)
     }
 
     /// 程序化添加 / 覆盖单个 PostgreSQL 连接。
@@ -382,11 +316,8 @@ impl ConfigBuilder {
 
     /// 构建最终配置并验证。
     pub fn build(self) -> ConfigResult<Config> {
-        let mode = std::env::var(format!("{}_MODE", self.env_prefix))
-            .ok()
-            .filter(|v| !v.is_empty());
         let cfg = Config {
-            mode,
+            mode: None,
             postgres: self.postgres,
             mysql: self.mysql,
             redis: self.redis,
@@ -407,22 +338,6 @@ impl ConfigBuilder {
     }
 }
 
-/// 用环境变量覆盖 `Config` 中已加载的数据库配置（最高优先级）。
-#[cfg(feature = "config-db")]
-fn apply_env_overrides(cfg: &mut Config, prefix: &str) -> ConfigResult<()> {
-    cfg.postgres = postgres::collect_env_postgres(prefix, &cfg.postgres)?;
-    cfg.mysql = mysql::collect_env_mysql(prefix, &cfg.mysql)?;
-    cfg.redis = redis::collect_env_redis(prefix, &cfg.redis)?;
-    cfg.tracing = tracing::collect_env_tracing(prefix, &cfg.tracing)?;
-    if let Ok(m) = std::env::var(format!("{}_MODE", prefix))
-        && !m.is_empty()
-    {
-        cfg.mode = Some(m);
-    }
-    cfg.validate()?;
-    Ok(())
-}
-
 // ──────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────
@@ -430,49 +345,6 @@ fn apply_env_overrides(cfg: &mut Config, prefix: &str) -> ConfigResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn from_env_works() -> ConfigResult<()> {
-        unsafe {
-            std::env::set_var("ENV_WORKS_CC_MYSQL_DEFAULT_HOST", "env-host");
-        }
-
-        let cfg = ConfigBuilder::empty()
-            .env_prefix("ENV_WORKS_CC")
-            .with_mysql("default", |m| m.user("u").password("p").database("db"))
-            .with_env()?
-            .build()?;
-
-        assert_eq!(cfg.mysql("default").unwrap().host, "env-host");
-
-        unsafe {
-            std::env::remove_var("ENV_WORKS_CC_MYSQL_DEFAULT_HOST");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn env_prefix_override() -> ConfigResult<()> {
-        unsafe {
-            std::env::set_var("TEST_CC_MYSQL_DEFAULT_HOST", "env-host");
-            std::env::set_var("TEST_CC_REDIS_DEFAULT_URL", "redis://env:6379");
-        }
-
-        let cfg = ConfigBuilder::empty()
-            .env_prefix("TEST_CC")
-            .with_mysql("default", |m| m.user("u").password("p").database("db"))
-            .with_env()?
-            .build()?;
-
-        assert_eq!(cfg.mysql("default").unwrap().host, "env-host");
-        assert_eq!(cfg.redis("default").unwrap().url, "redis://env:6379");
-
-        unsafe {
-            std::env::remove_var("TEST_CC_MYSQL_DEFAULT_HOST");
-            std::env::remove_var("TEST_CC_REDIS_DEFAULT_URL");
-        }
-        Ok(())
-    }
 
     #[test]
     fn mysql_names_iterator() -> ConfigResult<()> {
@@ -506,20 +378,5 @@ mod tests {
         names.sort();
         assert_eq!(names, vec!["primary", "replica"]);
         Ok(())
-    }
-
-    #[test]
-    fn env_mode_sets_mode() {
-        unsafe {
-            std::env::set_var("MODE_CC_MODE", "staging");
-        }
-        let cfg = ConfigBuilder::empty()
-            .env_prefix("MODE_CC")
-            .build()
-            .unwrap();
-        assert_eq!(cfg.mode(), Some("staging"));
-        unsafe {
-            std::env::remove_var("MODE_CC_MODE");
-        }
     }
 }
